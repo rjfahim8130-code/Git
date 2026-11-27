@@ -1,3 +1,4 @@
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,22 +11,24 @@ import 'features/upload/upload_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
       statusBarIconBrightness: Brightness.light,
     ),
   );
-  runApp(const ProviderScope(child: GhPushApp()));
+
+  runApp(const ProviderScope(child: GitoApp()));
 }
 
-class GhPushApp extends StatelessWidget {
-  const GhPushApp({super.key});
+class GitoApp extends StatelessWidget {
+  const GitoApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'GitHub Zip Pusher',
+      title: 'Gito',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.dark,
       home: const HomeShell(),
@@ -53,12 +56,17 @@ class _HomeShellState extends State<HomeShell> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(index: _index, children: _pages),
+      body: IndexedStack(
+        index: _index,
+        children: _pages,
+      ),
       bottomNavigationBar: NavigationBar(
         backgroundColor: AppColors.surfaceDark,
         indicatorColor: AppColors.primary.withValues(alpha: 0.25),
         selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
+        onDestinationSelected: (i) {
+          setState(() => _index = i);
+        },
         destinations: const [
           NavigationDestination(
             icon: Icon(Icons.folder_outlined),
