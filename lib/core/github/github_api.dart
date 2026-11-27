@@ -79,7 +79,7 @@ class GitHubApi {
     );
   }
 
-  Future> getUser() async {
+  Future<Map<String, dynamic>> getUser() async {
     final r = await _dio.get('/user');
     return Map<String, dynamic>.from(r.data as Map);
   }
@@ -168,7 +168,7 @@ class GitHubApi {
     required String owner,
     required String repo,
     required String baseTreeSha,
-    required List> tree,
+    required List<Map<String, dynamic>> tree,
   }) async {
     final r = await _dio.post(
       '/repos/$owner/$repo/git/trees',
@@ -227,11 +227,11 @@ class GitHubApi {
     final parentSha = await getBranchCommitSha(owner, repo, branch);
     final baseTreeSha = await getCommitTreeSha(owner, repo, parentSha);
 
-    final treeEntries = >[];
+    final treeEntries = <Map<String, dynamic>>[];
     var i = 0;
     for (final f in files) {
       i++;
-      onProgress?.call('Uploading blob $i/${files.length}:${f.path}');
+      onProgress?.call('Uploading blob $i/${files.length}: ${f.path}');
       final blobSha = await createBlob(owner, repo, f.bytes);
       treeEntries.add({
         'path': f.path,
