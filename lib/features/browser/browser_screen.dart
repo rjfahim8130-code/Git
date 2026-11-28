@@ -13,10 +13,11 @@ class BrowserScreen extends ConsumerStatefulWidget {
 }
 
 class _BrowserScreenState extends ConsumerState<BrowserScreen> {
-  List<GhTreeItem> _items = [];
+  List<GhTreeItem> _items = const [];
   final Set<String> _selected = {};
   bool _loading = false;
   String? _error;
+  bool _deleting = false;
 
   @override
   void initState() {
@@ -28,9 +29,10 @@ class _BrowserScreenState extends ConsumerState<BrowserScreen> {
     final api = ref.read(apiProvider);
     final target = ref.read(sessionTargetProvider);
     if (api == null || target == null) {
+      if (!mounted) return;
       setState(() {
         _error = 'Select account + repository first.';
-        _items = [];
+        _items = const [];
       });
       return;
     }
@@ -48,19 +50,22 @@ class _BrowserScreenState extends ConsumerState<BrowserScreen> {
           await api.getRecursiveTree(target.owner, target.repo, treeSha);
       final blobs = items.where((e) => e.type == 'blob').toList()
         ..sort((a, b) => a.path.compareTo(b.path));
+      if (!mounted) return;
       setState(() {
         _items = blobs;
         _loading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = api.friendlyError(e);
+        _error = GitHubApi.friendlyError(e);
       });
     }
   }
 
   Future<void> _deleteSelected() async {
+    if (_deleting) return;
     final api = ref.read(apiProvider);
     final target = ref.read(sessionTargetProvider);
     if (api == null || target == null || _selected.isEmpty) return;
@@ -85,58 +90,96 @@ class _BrowserScreenState extends ConsumerState<BrowserScreen> {
             const SizedBox(height: 12),
             TextField(
               controller: msgCtrl,
-              decoration: const InputDecoration(labelText: 'Commit message'),
+              decoration:
+                  const InputDecoration(labelText: 'Commit message'),
             ),
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Delete', style: TextStyle(color: AppColors.danger)),
+            child: const Text(
+              'Delete',
+              style: TextStyle(color: AppColors.danger),
+            ),
           ),
         ],
       ),
     );
-    if (ok != true) return;
 
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const Center(child: CircularProgressIndicator()),
-    );
+    if (ok != true || !mounted) {
+      msgCtrl.dispose();
+      return;
+    }
+
+    final confirmedMessage = msgCtrl.text.trim().isEmpty
+        ? 'Delete files from mobile'
+        : msgCtrl.text.trim();
+    msgCtrl.dispose();
+
+    setState(() => _deleting = true);
+    _showBlockingProgress(true);
 
     try {
       await api.deletePathsSingleCommit(
         owner: target.owner,
         repo: target.repo,
         branch: target.branch,
-        message: msgCtrl.text.trim().isEmpty
-            ? 'Delete files from mobile'
-            : msgCtrl.text.trim(),
+        message: confirmedMessage,
         pathsToDelete: _selected.toList(),
       );
-      if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Deleted ${_selected.length} file(s)')),
-        );
-        await _load();
-      }
+      if (!mounted) return;
+      _showBlockingProgress(false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Deleted ${_selected.length} file(s)')),
+      );
+      await _load();
     } catch (e) {
-      if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(api.friendlyError(e))),
-        );
-      }
+      if (!mounted) return;
+      _showBlockingProgress(false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(GitHubApi.friendlyError(e))),
+      );
+    } finally {
+      if (mounted) setState(() => _deleting = false);
     }
+  }
+
+  void _showBlockingProgress(bool show) {
+    if (!mounted) return;
+    if (show) {
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => const Center(child: CircularProgressIndicator()),
+      );
+    } else {
+      Navigator.of(context, rootNavigator: true).pop();
+    }
+  }
+
+  void _toggleAll() {
+    setState(() {
+      if (_selected.length == _items.length) {
+        _selected.clear();
+      } else {
+        _selected
+          ..clear()
+          ..addAll(_items.map((e) => e.path));
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final target = ref.watch(sessionTargetProvider);
-    ref.listen(sessionTargetProvider, (_, __) => _load());
+    ref.listen(sessionTargetProvider, (prev, next) {
+      if (prev != next) _load();
+    });
 
     return Scaffold(
       appBar: AppBar(
@@ -144,26 +187,19 @@ class _BrowserScreenState extends ConsumerState<BrowserScreen> {
         actions: [
           if (_items.isNotEmpty)
             TextButton(
-              onPressed: () {
-                setState(() {
-                  if (_selected.length == _items.length) {
-                    _selected.clear();
-                  } else {
-                    _selected
-                      ..clear()
-                      ..addAll(_items.map((e) => e.path));
-                  }
-                });
-              },
+              onPressed: _toggleAll,
               child: Text(
                 _selected.length == _items.length ? 'None' : 'All',
                 style: const TextStyle(color: AppColors.accent),
               ),
             ),
-          IconButton(onPressed: _loading ? null : _load, icon: const Icon(Icons.refresh)),
+          IconButton(
+            onPressed: _loading || _deleting ? null : _load,
+            icon: const Icon(Icons.refresh),
+          ),
         ],
       ),
-      floatingActionButton: _selected.isEmpty
+      floatingActionButton: _selected.isEmpty || _deleting
           ? null
           : FloatingActionButton.extended(
               onPressed: _deleteSelected,
@@ -180,7 +216,10 @@ class _BrowserScreenState extends ConsumerState<BrowserScreen> {
                 alignment: Alignment.centerLeft,
                 child: Text(
                   '${target.fullName} · ${target.branch}',
-                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 13,
+                  ),
                 ),
               ),
             ),
@@ -188,15 +227,36 @@ class _BrowserScreenState extends ConsumerState<BrowserScreen> {
             child: _loading
                 ? const Center(child: CircularProgressIndicator())
                 : _error != null
-                    ? Center(child: Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: Text(_error!, textAlign: TextAlign.center),
-                      ))
+                    ? Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                _error!,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: AppColors.textSecondary,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
+                              ElevatedButton.icon(
+                                onPressed: _load,
+                                icon: const Icon(Icons.refresh),
+                                label: const Text('Retry'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
                     : _items.isEmpty
                         ? const Center(
                             child: Text(
                               'No files on this branch',
-                              style: TextStyle(color: AppColors.textSecondary),
+                              style: TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
                             ),
                           )
                         : ListView.builder(
@@ -204,11 +264,13 @@ class _BrowserScreenState extends ConsumerState<BrowserScreen> {
                             itemCount: _items.length,
                             itemBuilder: (_, i) {
                               final item = _items[i];
-                              final checked = _selected.contains(item.path);
+                              final checked =
+                                  _selected.contains(item.path);
                               return CheckboxListTile(
                                 value: checked,
                                 activeColor: AppColors.primary,
-                                controlAffinity: ListTileControlAffinity.leading,
+                                controlAffinity:
+                                    ListTileControlAffinity.leading,
                                 title: Text(
                                   item.path,
                                   style: const TextStyle(fontSize: 13),
@@ -222,15 +284,17 @@ class _BrowserScreenState extends ConsumerState<BrowserScreen> {
                                         ),
                                       )
                                     : null,
-                                onChanged: (v) {
-                                  setState(() {
-                                    if (v == true) {
-                                      _selected.add(item.path);
-                                    } else {
-                                      _selected.remove(item.path);
-                                    }
-                                  });
-                                },
+                                onChanged: _deleting
+                                    ? null
+                                    : (v) {
+                                        setState(() {
+                                          if (v == true) {
+                                            _selected.add(item.path);
+                                          } else {
+                                            _selected.remove(item.path);
+                                          }
+                                        });
+                                      },
                               );
                             },
                           ),
