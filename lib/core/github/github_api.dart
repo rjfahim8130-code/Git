@@ -61,17 +61,23 @@ class PushFile {
 }
 
 class GitHubApi {
-  GitHubApi(this.token)
-      : _dio = Dio(
+  GitHubApi(String token)
+      : token = token.trim(),
+        _dio = Dio(
           BaseOptions(
             baseUrl: 'https://api.github.com',
             headers: {
-              'Authorization': 'Bearer $token',
+              // Classic + fine-grained PATs
+              'Authorization': 'Bearer ${token.trim()}',
               'Accept': 'application/vnd.github+json',
               'X-GitHub-Api-Version': '2022-11-28',
+              // GitHub requires a User-Agent
+              'User-Agent': 'Gito-Android-App',
             },
-            connectTimeout: const Duration(seconds: 30),
-            receiveTimeout: const Duration(seconds: 60),
+            connectTimeout: const Duration(seconds: 45),
+            receiveTimeout: const Duration(seconds: 90),
+            sendTimeout: const Duration(seconds: 90),
+            validateStatus: (s) => s != null && s < 500,
           ),
         );
 
@@ -80,6 +86,23 @@ class GitHubApi {
 
   Future<Map<String, dynamic>> getUser() async {
     final r = await _dio.get<Map<String, dynamic>>('/user');
+    final code = r.statusCode ?? 0;
+    if (code == 401 || code == 403) {
+      throw DioException(
+        requestOptions: r.requestOptions,
+        response: r,
+        type: DioExceptionType.badResponse,
+        message: code == 401 ? 'Unauthorized' : 'Forbidden',
+      );
+    }
+    if (code < 200 || code >= 300) {
+      throw DioException(
+        requestOptions: r.requestOptions,
+        response: r,
+        type: DioExceptionType.badResponse,
+        message: 'HTTP $code',
+      );
+    }
     return Map<String, dynamic>.from(r.data ?? const {});
   }
 
@@ -338,28 +361,49 @@ class GitHubApi {
           ? (data['message']?.toString() ?? e.message ?? 'Network error')
           : (e.message ?? 'Network error');
       final status = e.response?.statusCode;
+      final blob = ('${e.type} ${e.message} $msg').toLowerCase();
 
+      if (e.type == DioExceptionType.connectionError ||
+          e.type == DioExceptionType.connectionTimeout ||
+          e.type == DioExceptionType.unknown ||
+          blob.contains('failed host lookup') ||
+          blob.contains('socketexception') ||
+          blob.contains('network is unreachable') ||
+          blob.contains('connection errored') ||
+          blob.contains('timed out')) {
+        return 'নেটওয়ার্ক/DNS সমস্যা: api.github.com-এ পৌঁছানো যাচ্ছে না। '
+            'Wi‑Fi বা মোবাইল ডেটা চালু আছে কিনা দেখুন, VPN/Private DNS বন্ধ করুন, '
+            'আর অ্যাপকে ইন্টারনেট পারমিশন আছে কিনা নিশ্চিত করুন।';
+      }
       if (status == 401) {
-        return 'Invalid token. Re-check your PAT.';
+        return 'টোকেন সঠিক নয়। নতুন PAT বানিয়ে আবার দিন (repo scope)।';
       }
       if (status == 403) {
-        return 'Permission denied. Token needs repo / Contents:write scope.';
+        return 'অনুমতি নেই। Token-এ repo অথবা Contents: Read and write লাগবে।';
       }
       if (status == 404) {
-        return 'Not found. Check repo name and token access.';
+        return 'রিপো/রিসোর্স পাওয়া যায়নি। নাম ও টোকেন অ্যাক্সেস চেক করুন।';
       }
       if (status == 409) {
-        return 'Branch conflict — remote changed. Pull or retry.';
+        return 'ব্রাঞ্চ কনফ্লিক্ট — রিমোট বদলেছে। আবার চেষ্টা করুন।';
       }
       if (status == 422) {
-        return 'Invalid request: $msg';
+        return 'অবৈধ রিকোয়েস্ট: $msg';
       }
       if (status != null && status >= 500) {
-        return 'GitHub server error ($status). Try again shortly.';
+        return 'GitHub সার্ভার এরর ($status)। একটু পর চেষ্টা করুন।';
+      }
+      // 4xx with body message from GitHub
+      if (status != null && status >= 400) {
+        return msg;
       }
       return msg;
     }
-    final s = e.toString();
-    return s.replaceFirst('Exception: ', '');
+    final s = e.toString().toLowerCase();
+    if (s.contains('failed host lookup') || s.contains('socketexception')) {
+      return 'নেটওয়ার্ক/DNS সমস্যা — api.github.com resolve হচ্ছে না। '
+          'ইন্টারনেট ও অ্যাপ পারমিশন চেক করুন।';
+    }
+    return e.toString().replaceFirst('Exception: ', '');
   }
 }
