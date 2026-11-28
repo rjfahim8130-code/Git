@@ -1,0 +1,79 @@
+name: Build Gito APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.29.3"
+          channel: stable
+          cache: true
+
+      - name: Create Android project
+        run: |
+          if [ ! -d android ]; then
+            flutter create . \
+              --project-name gito \
+              --org com.personal.gito
+          fi
+
+      - name: Android label + INTERNET permission (required)
+        run: |
+          python3 << 'PY'
+          from pathlib import Path
+          import re
+          manifest = Path("android/app/src/main/AndroidManifest.xml")
+          text = manifest.read_text(encoding="utf-8")
+          text = re.sub(r'android:label="[^"]*"', 'android:label="Gito"', text)
+          perms = [
+              'android.permission.INTERNET',
+              'android.permission.ACCESS_NETWORK_STATE',
+          ]
+          for perm in perms:
+              tag = f'<uses-permission android:name="{perm}"/>'
+              if perm not in text:
+                  text = re.sub(
+                      r'(<manifest[^>]*>)',
+                      r'\1\n    ' + tag,
+                      text,
+                      count=1,
+                  )
+          # Ensure application has network usesCleartext not needed; keep defaults
+          manifest.write_text(text, encoding="utf-8")
+          print(manifest.read_text(encoding="utf-8"))
+          PY
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Generate launcher icon
+        run: dart run flutter_launcher_icons || true
+
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos || true
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: gito-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
