@@ -77,7 +77,6 @@ class GitHubApi {
             connectTimeout: const Duration(seconds: 45),
             receiveTimeout: const Duration(seconds: 90),
             sendTimeout: const Duration(seconds: 90),
-            validateStatus: (s) => s != null && s < 500,
           ),
         );
 
@@ -181,6 +180,20 @@ class GitHubApi {
         .toList();
   }
 
+  String _ghMessage(Response<Map<String, dynamic>> r, String fallback) {
+    final data = r.data;
+    if (data is Map) {
+      final m = data['message']?.toString();
+      final errors = data['errors'];
+      if (errors is List && errors.isNotEmpty) {
+        final detail = errors.map((e) => e.toString()).join('; ');
+        return '${m ?? fallback}: $detail';
+      }
+      if (m != null && m.isNotEmpty) return m;
+    }
+    return '$fallback (HTTP ${r.statusCode})';
+  }
+
   Future<String> createBlob(
       String owner, String repo, Uint8List bytes) async {
     final content = base64Encode(bytes);
@@ -189,7 +202,14 @@ class GitHubApi {
       data: {'content': content, 'encoding': 'base64'},
     );
     final sha = r.data?['sha'] as String?;
-    if (sha == null) throw Exception('Blob creation failed');
+    if (sha == null || sha.isEmpty) {
+      throw DioException(
+        requestOptions: r.requestOptions,
+        response: r,
+        type: DioExceptionType.badResponse,
+        message: _ghMessage(r, 'Blob creation failed'),
+      );
+    }
     return sha;
   }
 
@@ -199,12 +219,25 @@ class GitHubApi {
     required String baseTreeSha,
     required List<Map<String, dynamic>> tree,
   }) async {
+    if (tree.isEmpty) {
+      throw Exception('Tree is empty — no files to commit');
+    }
     final r = await _dio.post<Map<String, dynamic>>(
       '/repos/$owner/$repo/git/trees',
-      data: {'base_tree': baseTreeSha, 'tree': tree},
+      data: {
+        'base_tree': baseTreeSha,
+        'tree': tree,
+      },
     );
     final sha = r.data?['sha'] as String?;
-    if (sha == null) throw Exception('Tree creation failed');
+    if (sha == null || sha.isEmpty) {
+      throw DioException(
+        requestOptions: r.requestOptions,
+        response: r,
+        type: DioExceptionType.badResponse,
+        message: _ghMessage(r, 'Tree creation failed'),
+      );
+    }
     return sha;
   }
 
@@ -224,7 +257,14 @@ class GitHubApi {
       },
     );
     final sha = r.data?['sha'] as String?;
-    if (sha == null) throw Exception('Commit creation failed');
+    if (sha == null || sha.isEmpty) {
+      throw DioException(
+        requestOptions: r.requestOptions,
+        response: r,
+        type: DioExceptionType.badResponse,
+        message: _ghMessage(r, 'Commit creation failed'),
+      );
+    }
     return sha;
   }
 
@@ -261,10 +301,16 @@ class GitHubApi {
     var i = 0;
     for (final f in files) {
       i++;
-      onProgress?.call('Uploading blob $i/${files.length}: ${f.path}');
+      // GitHub path rules: no leading slash, no empty, use /
+      var path = f.path.replaceAll('\\', '/').trim();
+      while (path.startsWith('/')) path = path.substring(1);
+      if (path.isEmpty || path.contains('..')) {
+        throw Exception('Invalid file path in ZIP: ${f.path}');
+      }
+      onProgress?.call('Uploading blob $i/${files.length}: $path');
       final blobSha = await createBlob(owner, repo, f.bytes);
       treeEntries.add({
-        'path': f.path,
+        'path': path,
         'mode': '100644',
         'type': 'blob',
         'sha': blobSha,
@@ -316,14 +362,22 @@ class GitHubApi {
     final parentSha = await getBranchCommitSha(owner, repo, branch);
     final baseTreeSha = await getCommitTreeSha(owner, repo, parentSha);
 
-    final tree = pathsToDelete
-        .map((path) => {
-              'path': path,
-              'mode': '100644',
-              'type': 'blob',
-              'sha': null,
-            })
-        .toList();
+    final tree = <Map<String, dynamic>>[];
+    for (var path in pathsToDelete) {
+      path = path.replaceAll('\\', '/').trim();
+      while (path.startsWith('/')) path = path.substring(1);
+      if (path.isEmpty) continue;
+      // Explicit null sha = delete from tree (GitHub Git Data API)
+      tree.add({
+        'path': path,
+        'mode': '100644',
+        'type': 'blob',
+        'sha': null,
+      });
+    }
+    if (tree.isEmpty) {
+      throw Exception('No valid paths to delete');
+    }
 
     onProgress?.call('Creating tree…');
     final newTreeSha = await createTree(
