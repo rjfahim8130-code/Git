@@ -34,7 +34,7 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
             Future<void> saveAccount() async {
               if (validating) return;
               final label = labelController.text.trim();
-              final token = tokenController.text.trim();
+              final token = tokenController.text.trim().trim();
 
               if (token.isEmpty) {
                 _snack(context, 'GitHub Token required.');
