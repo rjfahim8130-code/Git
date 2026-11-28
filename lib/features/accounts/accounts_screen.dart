@@ -15,7 +15,6 @@ class AccountsScreen extends ConsumerStatefulWidget {
 }
 
 class _AccountsScreenState extends ConsumerState<AccountsScreen> {
-  bool _saving = false;
 
   Future<void> _showAccountDialog({GhAccount? account}) async {
     if (_saving) return;
@@ -388,11 +387,6 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
             icon: const Icon(Icons.refresh),
           ),
         ],
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _saving ? null : () => _showAccountDialog(),
-        icon: const Icon(Icons.add),
-        label: const Text('Add Account'),
       ),
       body: accountsState.when(
         loading: () => const Center(child: CircularProgressIndicator()),
