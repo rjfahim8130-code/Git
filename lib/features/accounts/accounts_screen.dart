@@ -368,6 +368,11 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
     final activeId = ref.watch(activeAccountIdProvider);
 
     return Scaffold(
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _showAccountDialog(),
+        icon: const Icon(Icons.add),
+        label: const Text('Add account'),
+      ),
       appBar: AppBar(
         title: const Column(
           crossAxisAlignment: CrossAxisAlignment.start,

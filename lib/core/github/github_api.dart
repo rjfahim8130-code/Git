@@ -180,11 +180,12 @@ class GitHubApi {
         .toList();
   }
 
-  String _ghMessage(Response<Map<String, dynamic>> r, String fallback) {
-    final data = r.data;
-    if (data is Map) {
-      final m = data['message']?.toString();
-      final errors = data['errors'];
+  String _ghMessage(Response r, String fallback) {
+    final raw = r.data;
+    if (raw is Map) {
+      final map = Map<Object?, Object?>.from(raw);
+      final m = map['message']?.toString();
+      final errors = map['errors'];
       if (errors is List && errors.isNotEmpty) {
         final detail = errors.map((e) => e.toString()).join('; ');
         return '${m ?? fallback}: $detail';

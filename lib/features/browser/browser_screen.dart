@@ -13,11 +13,12 @@ class BrowserScreen extends ConsumerStatefulWidget {
 }
 
 class _BrowserScreenState extends ConsumerState<BrowserScreen> {
-  List<GhTreeItem> _items = const [];
+  List<GhTreeItem> _items = [];
   final Set<String> _selected = {};
   bool _loading = false;
   String? _error;
-  bool _deleting = false;
+  String _query = '';
+  final _searchCtrl = TextEditingController();
 
   @override
   void initState() {
@@ -25,14 +26,25 @@ class _BrowserScreenState extends ConsumerState<BrowserScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _load());
   }
 
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  List<GhTreeItem> get _filtered {
+    final q = _query.trim().toLowerCase();
+    if (q.isEmpty) return _items;
+    return _items.where((e) => e.path.toLowerCase().contains(q)).toList();
+  }
+
   Future<void> _load() async {
     final api = ref.read(apiProvider);
     final target = ref.read(sessionTargetProvider);
     if (api == null || target == null) {
-      if (!mounted) return;
       setState(() {
         _error = 'Select account + repository first.';
-        _items = const [];
+        _items = [];
       });
       return;
     }
@@ -50,13 +62,11 @@ class _BrowserScreenState extends ConsumerState<BrowserScreen> {
           await api.getRecursiveTree(target.owner, target.repo, treeSha);
       final blobs = items.where((e) => e.type == 'blob').toList()
         ..sort((a, b) => a.path.compareTo(b.path));
-      if (!mounted) return;
       setState(() {
         _items = blobs;
         _loading = false;
       });
     } catch (e) {
-      if (!mounted) return;
       setState(() {
         _loading = false;
         _error = GitHubApi.friendlyError(e);
@@ -65,7 +75,6 @@ class _BrowserScreenState extends ConsumerState<BrowserScreen> {
   }
 
   Future<void> _deleteSelected() async {
-    if (_deleting) return;
     final api = ref.read(apiProvider);
     final target = ref.read(sessionTargetProvider);
     if (api == null || target == null || _selected.isEmpty) return;
@@ -90,96 +99,62 @@ class _BrowserScreenState extends ConsumerState<BrowserScreen> {
             const SizedBox(height: 12),
             TextField(
               controller: msgCtrl,
-              decoration:
-                  const InputDecoration(labelText: 'Commit message'),
+              decoration: const InputDecoration(labelText: 'Commit message'),
             ),
           ],
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text(
-              'Delete',
-              style: TextStyle(color: AppColors.danger),
-            ),
+            child: const Text('Delete',
+                style: TextStyle(color: AppColors.danger)),
           ),
         ],
       ),
     );
+    if (ok != true) return;
 
-    if (ok != true || !mounted) {
-      msgCtrl.dispose();
-      return;
-    }
-
-    final confirmedMessage = msgCtrl.text.trim().isEmpty
-        ? 'Delete files from mobile'
-        : msgCtrl.text.trim();
-    msgCtrl.dispose();
-
-    setState(() => _deleting = true);
-    _showBlockingProgress(true);
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
 
     try {
       await api.deletePathsSingleCommit(
         owner: target.owner,
         repo: target.repo,
         branch: target.branch,
-        message: confirmedMessage,
+        message: msgCtrl.text.trim().isEmpty
+            ? 'Delete files from mobile'
+            : msgCtrl.text.trim(),
         pathsToDelete: _selected.toList(),
       );
-      if (!mounted) return;
-      _showBlockingProgress(false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Deleted ${_selected.length} file(s)')),
-      );
-      await _load();
-    } catch (e) {
-      if (!mounted) return;
-      _showBlockingProgress(false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(GitHubApi.friendlyError(e))),
-      );
-    } finally {
-      if (mounted) setState(() => _deleting = false);
-    }
-  }
-
-  void _showBlockingProgress(bool show) {
-    if (!mounted) return;
-    if (show) {
-      showDialog<void>(
-        context: context,
-        barrierDismissible: false,
-        builder: (_) => const Center(child: CircularProgressIndicator()),
-      );
-    } else {
-      Navigator.of(context, rootNavigator: true).pop();
-    }
-  }
-
-  void _toggleAll() {
-    setState(() {
-      if (_selected.length == _items.length) {
-        _selected.clear();
-      } else {
-        _selected
-          ..clear()
-          ..addAll(_items.map((e) => e.path));
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Deleted ${_selected.length} file(s)')),
+        );
+        await _load();
       }
-    });
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(GitHubApi.friendlyError(e))),
+        );
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final target = ref.watch(sessionTargetProvider);
-    ref.listen(sessionTargetProvider, (prev, next) {
-      if (prev != next) _load();
-    });
+    ref.listen(sessionTargetProvider, (_, __) => _load());
+    final visible = _filtered;
 
     return Scaffold(
       appBar: AppBar(
@@ -187,19 +162,32 @@ class _BrowserScreenState extends ConsumerState<BrowserScreen> {
         actions: [
           if (_items.isNotEmpty)
             TextButton(
-              onPressed: _toggleAll,
+              onPressed: () {
+                setState(() {
+                  final paths = visible.map((e) => e.path).toSet();
+                  final allSelected = paths.every(_selected.contains) &&
+                      paths.isNotEmpty;
+                  if (allSelected) {
+                    _selected.removeAll(paths);
+                  } else {
+                    _selected.addAll(paths);
+                  }
+                });
+              },
               child: Text(
-                _selected.length == _items.length ? 'None' : 'All',
+                visible.isNotEmpty &&
+                        visible.every((e) => _selected.contains(e.path))
+                    ? 'None'
+                    : 'All',
                 style: const TextStyle(color: AppColors.accent),
               ),
             ),
           IconButton(
-            onPressed: _loading || _deleting ? null : _load,
-            icon: const Icon(Icons.refresh),
-          ),
+              onPressed: _loading ? null : _load,
+              icon: const Icon(Icons.refresh)),
         ],
       ),
-      floatingActionButton: _selected.isEmpty || _deleting
+      floatingActionButton: _selected.isEmpty
           ? null
           : FloatingActionButton.extended(
               onPressed: _deleteSelected,
@@ -217,9 +205,39 @@ class _BrowserScreenState extends ConsumerState<BrowserScreen> {
                 child: Text(
                   '${target.fullName} · ${target.branch}',
                   style: const TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 13,
-                  ),
+                      color: AppColors.textSecondary, fontSize: 13),
+                ),
+              ),
+            ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+            child: TextField(
+              controller: _searchCtrl,
+              onChanged: (v) => setState(() => _query = v),
+              decoration: InputDecoration(
+                hintText: 'Search files…',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: _query.isEmpty
+                    ? null
+                    : IconButton(
+                        icon: const Icon(Icons.close, size: 18),
+                        onPressed: () {
+                          _searchCtrl.clear();
+                          setState(() => _query = '');
+                        },
+                      ),
+              ),
+            ),
+          ),
+          if (_query.isNotEmpty && !_loading)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '${visible.length} of ${_items.length} files',
+                  style: const TextStyle(
+                      fontSize: 12, color: AppColors.textSecondary),
                 ),
               ),
             ),
@@ -230,51 +248,29 @@ class _BrowserScreenState extends ConsumerState<BrowserScreen> {
                     ? Center(
                         child: Padding(
                           padding: const EdgeInsets.all(24),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                _error!,
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(
-                                  color: AppColors.textSecondary,
-                                ),
-                              ),
-                              const SizedBox(height: 12),
-                              ElevatedButton.icon(
-                                onPressed: _load,
-                                icon: const Icon(Icons.refresh),
-                                label: const Text('Retry'),
-                              ),
-                            ],
-                          ),
+                          child: Text(_error!, textAlign: TextAlign.center),
                         ),
                       )
-                    : _items.isEmpty
+                    : visible.isEmpty
                         ? const Center(
                             child: Text(
-                              'No files on this branch',
-                              style: TextStyle(
-                                color: AppColors.textSecondary,
-                              ),
+                              'No files match',
+                              style: TextStyle(color: AppColors.textSecondary),
                             ),
                           )
                         : ListView.builder(
                             padding: const EdgeInsets.all(12),
-                            itemCount: _items.length,
+                            itemCount: visible.length,
                             itemBuilder: (_, i) {
-                              final item = _items[i];
-                              final checked =
-                                  _selected.contains(item.path);
+                              final item = visible[i];
+                              final checked = _selected.contains(item.path);
                               return CheckboxListTile(
                                 value: checked,
                                 activeColor: AppColors.primary,
                                 controlAffinity:
                                     ListTileControlAffinity.leading,
-                                title: Text(
-                                  item.path,
-                                  style: const TextStyle(fontSize: 13),
-                                ),
+                                title: Text(item.path,
+                                    style: const TextStyle(fontSize: 13)),
                                 subtitle: item.size != null
                                     ? Text(
                                         '${item.size} bytes',
@@ -284,17 +280,15 @@ class _BrowserScreenState extends ConsumerState<BrowserScreen> {
                                         ),
                                       )
                                     : null,
-                                onChanged: _deleting
-                                    ? null
-                                    : (v) {
-                                        setState(() {
-                                          if (v == true) {
-                                            _selected.add(item.path);
-                                          } else {
-                                            _selected.remove(item.path);
-                                          }
-                                        });
-                                      },
+                                onChanged: (v) {
+                                  setState(() {
+                                    if (v == true) {
+                                      _selected.add(item.path);
+                                    } else {
+                                      _selected.remove(item.path);
+                                    }
+                                  });
+                                },
                               );
                             },
                           ),
