@@ -13,8 +13,8 @@ class ReposScreen extends ConsumerStatefulWidget {
 }
 
 class _ReposScreenState extends ConsumerState<ReposScreen> {
-  List<GhRepo> _repos = [];
-  List<String> _branches = [];
+  List<GhRepo> _repos = const [];
+  List<String> _branches = const [];
   bool _loading = false;
   String? _error;
   String _query = '';
@@ -30,9 +30,10 @@ class _ReposScreenState extends ConsumerState<ReposScreen> {
   Future<void> _loadRepos() async {
     final api = ref.read(apiProvider);
     if (api == null) {
+      if (!mounted) return;
       setState(() {
         _error = 'Add & select a GitHub account first.';
-        _repos = [];
+        _repos = const [];
       });
       return;
     }
@@ -42,6 +43,7 @@ class _ReposScreenState extends ConsumerState<ReposScreen> {
     });
     try {
       final list = await api.listRepos();
+      if (!mounted) return;
       final session = ref.read(sessionTargetProvider);
       setState(() {
         _repos = list;
@@ -55,9 +57,10 @@ class _ReposScreenState extends ConsumerState<ReposScreen> {
         await _loadBranches(_selectedFullName!);
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = api.friendlyError(e);
+        _error = GitHubApi.friendlyError(e);
       });
     }
   }
@@ -69,23 +72,46 @@ class _ReposScreenState extends ConsumerState<ReposScreen> {
     if (parts.length != 2) return;
     try {
       final branches = await api.listBranches(parts[0], parts[1]);
-      final repo = _repos.cast<GhRepo?>().firstWhere(
-            (r) => r?.fullName == fullName,
-            orElse: () => null,
-          );
+      if (!mounted) return;
+      final repo = _repos.where((r) => r.fullName == fullName).firstOrNull;
+      final defaultBranch = repo?.defaultBranch ?? 'main';
       setState(() {
         _branches = branches;
         _selectedBranch = branches.contains(_selectedBranch)
             ? _selectedBranch
-            : (repo?.defaultBranch ?? branches.first);
+            : (branches.contains(defaultBranch)
+                ? defaultBranch
+                : (branches.isNotEmpty ? branches.first : null));
       });
-    } catch (_) {}
+    } catch (_) {
+      // ignore branch load errors (repo may be empty)
+    }
   }
 
   List<GhRepo> get _filtered {
     if (_query.trim().isEmpty) return _repos;
     final q = _query.toLowerCase();
     return _repos.where((r) => r.fullName.toLowerCase().contains(q)).toList();
+  }
+
+  Future<void> _onRepoSelected(GhRepo r) async {
+    if (_loading) return;
+    setState(() {
+      _selectedFullName = r.fullName;
+      _selectedBranch = r.defaultBranch;
+    });
+    await ref.read(sessionTargetProvider.notifier).set(
+          owner: r.owner,
+          repo: r.name,
+          branch: r.defaultBranch,
+        );
+    await _loadBranches(r.fullName);
+  }
+
+  Future<void> _onBranchSelected(String? b) async {
+    if (b == null || _selectedFullName == null) return;
+    setState(() => _selectedBranch = b);
+    await ref.read(sessionTargetProvider.notifier).setBranch(b);
   }
 
   @override
@@ -102,7 +128,10 @@ class _ReposScreenState extends ConsumerState<ReposScreen> {
             if (active != null)
               Text(
                 active.login ?? active.label,
-                style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppColors.textSecondary,
+                ),
               ),
           ],
         ),
@@ -138,11 +167,14 @@ class _ReposScreenState extends ConsumerState<ReposScreen> {
                   ],
                 ),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.primary.withValues(alpha: 0.4)),
+                border: Border.all(
+                  color: AppColors.primary.withValues(alpha: 0.4),
+                ),
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.check_circle, color: AppColors.primary, size: 20),
+                  const Icon(Icons.check_circle,
+                      color: AppColors.primary, size: 20),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -158,18 +190,12 @@ class _ReposScreenState extends ConsumerState<ReposScreen> {
                             : _branches.first,
                         dropdownColor: AppColors.cardDark,
                         items: _branches
-                            .map((b) => DropdownMenuItem(value: b, child: Text(b)))
+                            .map((b) => DropdownMenuItem(
+                                  value: b,
+                                  child: Text(b),
+                                ))
                             .toList(),
-                        onChanged: (b) async {
-                          if (b == null || _selectedFullName == null) return;
-                          setState(() => _selectedBranch = b);
-                          final parts = _selectedFullName!.split('/');
-                          await ref.read(sessionTargetProvider.notifier).set(
-                                owner: parts[0],
-                                repo: parts[1],
-                                branch: b,
-                              );
-                        },
+                        onChanged: _onBranchSelected,
                       ),
                     ),
                 ],
@@ -182,87 +208,124 @@ class _ReposScreenState extends ConsumerState<ReposScreen> {
                     ? Center(
                         child: Padding(
                           padding: const EdgeInsets.all(24),
-                          child: Text(_error!, textAlign: TextAlign.center),
-                        ),
-                      )
-                    : ListView.builder(
-                        padding: const EdgeInsets.all(16),
-                        itemCount: _filtered.length,
-                        itemBuilder: (_, i) {
-                          final r = _filtered[i];
-                          final selected = r.fullName == _selectedFullName;
-                          return Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: Material(
-                              color: AppColors.cardDark,
-                              borderRadius: BorderRadius.circular(12),
-                              child: InkWell(
-                                borderRadius: BorderRadius.circular(12),
-                                onTap: () async {
-                                  setState(() {
-                                    _selectedFullName = r.fullName;
-                                    _selectedBranch = r.defaultBranch;
-                                  });
-                                  await ref.read(sessionTargetProvider.notifier).set(
-                                        owner: r.owner,
-                                        repo: r.name,
-                                        branch: r.defaultBranch,
-                                      );
-                                  await _loadBranches(r.fullName);
-                                },
-                                child: Container(
-                                  padding: const EdgeInsets.all(14),
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(
-                                      color: selected
-                                          ? AppColors.primary
-                                          : AppColors.borderDark,
-                                    ),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      Icon(
-                                        r.private ? Icons.lock_outline : Icons.public,
-                                        size: 18,
-                                        color: AppColors.textSecondary,
-                                      ),
-                                      const SizedBox(width: 10),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              r.fullName,
-                                              style: const TextStyle(fontWeight: FontWeight.w600),
-                                            ),
-                                            if (r.description != null &&
-                                                r.description!.isNotEmpty)
-                                              Text(
-                                                r.description!,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: const TextStyle(
-                                                  fontSize: 12,
-                                                  color: AppColors.textSecondary,
-                                                ),
-                                              ),
-                                          ],
-                                        ),
-                                      ),
-                                      if (selected)
-                                        const Icon(Icons.check, color: AppColors.primary),
-                                    ],
-                                  ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.error_outline,
+                                  size: 42, color: AppColors.danger),
+                              const SizedBox(height: 12),
+                              Text(
+                                _error!,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: AppColors.textSecondary,
                                 ),
                               ),
+                              const SizedBox(height: 16),
+                              ElevatedButton.icon(
+                                onPressed: _loadRepos,
+                                icon: const Icon(Icons.refresh),
+                                label: const Text('Retry'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      )
+                    : _filtered.isEmpty
+                        ? Center(
+                            child: Text(
+                              _repos.isEmpty
+                                  ? 'No repositories found'
+                                  : 'No matches for "$_query"',
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                              ),
                             ),
-                          );
-                        },
-                      ),
+                          )
+                        : ListView.builder(
+                            padding: const EdgeInsets.all(16),
+                            itemCount: _filtered.length,
+                            itemBuilder: (_, i) {
+                              final r = _filtered[i];
+                              final selected = r.fullName == _selectedFullName;
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: Material(
+                                  color: AppColors.cardDark,
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(12),
+                                    onTap: () => _onRepoSelected(r),
+                                    child: Container(
+                                      padding: const EdgeInsets.all(14),
+                                      decoration: BoxDecoration(
+                                        borderRadius:
+                                            BorderRadius.circular(12),
+                                        border: Border.all(
+                                          color: selected
+                                              ? AppColors.primary
+                                              : AppColors.borderDark,
+                                        ),
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          Icon(
+                                            r.private
+                                                ? Icons.lock_outline
+                                                : Icons.public,
+                                            size: 18,
+                                            color: AppColors.textSecondary,
+                                          ),
+                                          const SizedBox(width: 10),
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  r.fullName,
+                                                  style: const TextStyle(
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                                if (r.description != null &&
+                                                    r.description!.isNotEmpty)
+                                                  Text(
+                                                    r.description!,
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    style: const TextStyle(
+                                                      fontSize: 12,
+                                                      color: AppColors
+                                                          .textSecondary,
+                                                    ),
+                                                  ),
+                                              ],
+                                            ),
+                                          ),
+                                          if (selected)
+                                            const Icon(Icons.check,
+                                                color: AppColors.primary),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
           ),
         ],
       ),
     );
+  }
+}
+
+extension<T> on Iterable<T> {
+  T? get firstOrNull {
+    final it = iterator;
+    if (it.moveNext()) return it.current;
+    return null;
   }
 }
