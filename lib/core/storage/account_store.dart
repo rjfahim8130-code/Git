@@ -51,22 +51,30 @@ class GhAccount {
 }
 
 class AccountStore {
+  AccountStore({FlutterSecureStorage? secureStorage})
+      : _secure = secureStorage ??
+            const FlutterSecureStorage(
+              aOptions: AndroidOptions(encryptedSharedPreferences: true),
+            );
+
+  final FlutterSecureStorage _secure;
+
   static const _keyAccounts = 'gh_accounts_v1';
   static const _keyActive = 'gh_active_id';
   static const _keyLastRepo = 'gh_last_repo';
   static const _keyLastBranch = 'gh_last_branch';
 
-  final _secure = const FlutterSecureStorage(
-    aOptions: AndroidOptions(encryptedSharedPreferences: true),
-  );
-
   Future<List<GhAccount>> loadAccounts() async {
-    final raw = await _secure.read(key: _keyAccounts);
-    if (raw == null || raw.isEmpty) return [];
-    final list = jsonDecode(raw) as List;
-    return list
-        .map((e) => GhAccount.fromJson(Map<String, dynamic>.from(e as Map)))
-        .toList();
+    try {
+      final raw = await _secure.read(key: _keyAccounts);
+      if (raw == null || raw.isEmpty) return const [];
+      final list = jsonDecode(raw) as List;
+      return list
+          .map((e) => GhAccount.fromJson(Map<String, dynamic>.from(e as Map)))
+          .toList();
+    } catch (_) {
+      return const [];
+    }
   }
 
   Future<void> saveAccounts(List<GhAccount> accounts) async {
@@ -106,5 +114,13 @@ class AccountStore {
   Future<String?> getLastBranch() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString(_keyLastBranch);
+  }
+
+  Future<void> clearAll() async {
+    await _secure.delete(key: _keyAccounts);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_keyActive);
+    await prefs.remove(_keyLastRepo);
+    await prefs.remove(_keyLastBranch);
   }
 }
