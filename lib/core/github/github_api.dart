@@ -11,7 +11,7 @@ class GhRepo {
   final String defaultBranch;
   final String? description;
 
-  GhRepo({
+  const GhRepo({
     required this.fullName,
     required this.name,
     required this.owner,
@@ -23,8 +23,8 @@ class GhRepo {
   factory GhRepo.fromJson(Map<String, dynamic> j) {
     final owner = j['owner'] as Map<String, dynamic>?;
     return GhRepo(
-      fullName: j['full_name'] as String,
-      name: j['name'] as String,
+      fullName: j['full_name'] as String? ?? '',
+      name: j['name'] as String? ?? '',
       owner: owner?['login'] as String? ?? '',
       private: j['private'] as bool? ?? false,
       defaultBranch: j['default_branch'] as String? ?? 'main',
@@ -35,11 +35,11 @@ class GhRepo {
 
 class GhTreeItem {
   final String path;
-  final String type; // blob | tree
+  final String type;
   final String? sha;
   final int? size;
 
-  GhTreeItem({
+  const GhTreeItem({
     required this.path,
     required this.type,
     this.sha,
@@ -47,48 +47,48 @@ class GhTreeItem {
   });
 
   factory GhTreeItem.fromJson(Map<String, dynamic> j) => GhTreeItem(
-        path: j['path'] as String,
-        type: j['type'] as String,
+        path: j['path'] as String? ?? '',
+        type: j['type'] as String? ?? '',
         sha: j['sha'] as String?,
-        size: j['size'] as int?,
+        size: (j['size'] as num?)?.toInt(),
       );
 }
 
 class PushFile {
   final String path;
   final Uint8List bytes;
-  PushFile({required this.path, required this.bytes});
+  const PushFile({required this.path, required this.bytes});
 }
 
 class GitHubApi {
-  final String token;
-  late final Dio _dio;
+  GitHubApi(this.token)
+      : _dio = Dio(
+          BaseOptions(
+            baseUrl: 'https://api.github.com',
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            },
+            connectTimeout: const Duration(seconds: 30),
+            receiveTimeout: const Duration(seconds: 60),
+          ),
+        );
 
-  GitHubApi(this.token) {
-    _dio = Dio(
-      BaseOptions(
-        baseUrl: 'https://api.github.com',
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-        },
-        connectTimeout: const Duration(seconds: 30),
-        receiveTimeout: const Duration(seconds: 60),
-      ),
-    );
-  }
+  final String token;
+  final Dio _dio;
 
   Future<Map<String, dynamic>> getUser() async {
-    final r = await _dio.get('/user');
-    return Map<String, dynamic>.from(r.data as Map);
+    final r = await _dio.get<Map<String, dynamic>>('/user');
+    return Map<String, dynamic>.from(r.data ?? const {});
   }
 
   Future<List<GhRepo>> listRepos({int perPage = 100}) async {
     final out = <GhRepo>[];
     var page = 1;
-    while (true) {
-      final r = await _dio.get(
+    const maxPages = 10;
+    while (page <= maxPages) {
+      final r = await _dio.get<List<dynamic>>(
         '/user/repos',
         queryParameters: {
           'per_page': perPage,
@@ -97,71 +97,77 @@ class GitHubApi {
           'affiliation': 'owner,collaborator,organization_member',
         },
       );
-      final list = r.data as List;
+      final list = r.data ?? const [];
       if (list.isEmpty) break;
       out.addAll(
         list.map((e) => GhRepo.fromJson(Map<String, dynamic>.from(e as Map))),
       );
       if (list.length < perPage) break;
       page++;
-      if (page > 10) break;
     }
     return out;
   }
 
   Future<List<String>> listBranches(String owner, String repo) async {
-    final r = await _dio.get(
+    final r = await _dio.get<List<dynamic>>(
       '/repos/$owner/$repo/branches',
       queryParameters: {'per_page': 100},
     );
-    final list = r.data as List;
+    final list = r.data ?? const [];
     return list
-        .map((e) => (e as Map)['name'] as String)
+        .map((e) => (e as Map)['name'] as String? ?? '')
+        .where((e) => e.isNotEmpty)
         .toList();
   }
 
-  Future<String> getBranchCommitSha(String owner, String repo, String branch) async {
-    final r = await _dio.get('/repos/$owner/$repo/git/ref/heads/$branch');
-    final data = r.data as Map;
-    final object = data['object'] as Map;
-    return object['sha'] as String;
+  Future<String> getBranchCommitSha(
+      String owner, String repo, String branch) async {
+    final r = await _dio.get<Map<String, dynamic>>(
+      '/repos/$owner/$repo/git/ref/heads/$branch',
+    );
+    final object = r.data?['object'] as Map?;
+    final sha = object?['sha'] as String?;
+    if (sha == null || sha.isEmpty) {
+      throw Exception('Branch SHA not found for $branch');
+    }
+    return sha;
   }
 
-  Future<String> getCommitTreeSha(String owner, String repo, String commitSha) async {
-    final r = await _dio.get('/repos/$owner/$repo/git/commits/$commitSha');
-    final tree = (r.data as Map)['tree'] as Map;
-    return tree['sha'] as String;
+  Future<String> getCommitTreeSha(
+      String owner, String repo, String commitSha) async {
+    final r = await _dio.get<Map<String, dynamic>>(
+      '/repos/$owner/$repo/git/commits/$commitSha',
+    );
+    final tree = r.data?['tree'] as Map?;
+    final sha = tree?['sha'] as String?;
+    if (sha == null || sha.isEmpty) {
+      throw Exception('Commit tree SHA not found');
+    }
+    return sha;
   }
 
   Future<List<GhTreeItem>> getRecursiveTree(
-    String owner,
-    String repo,
-    String treeSha,
-  ) async {
-    final r = await _dio.get(
+      String owner, String repo, String treeSha) async {
+    final r = await _dio.get<Map<String, dynamic>>(
       '/repos/$owner/$repo/git/trees/$treeSha',
       queryParameters: {'recursive': '1'},
     );
-    final tree = (r.data as Map)['tree'] as List? ?? [];
+    final tree = r.data?['tree'] as List? ?? const [];
     return tree
         .map((e) => GhTreeItem.fromJson(Map<String, dynamic>.from(e as Map)))
         .toList();
   }
 
   Future<String> createBlob(
-    String owner,
-    String repo,
-    Uint8List bytes,
-  ) async {
+      String owner, String repo, Uint8List bytes) async {
     final content = base64Encode(bytes);
-    final r = await _dio.post(
+    final r = await _dio.post<Map<String, dynamic>>(
       '/repos/$owner/$repo/git/blobs',
-      data: {
-        'content': content,
-        'encoding': 'base64',
-      },
+      data: {'content': content, 'encoding': 'base64'},
     );
-    return (r.data as Map)['sha'] as String;
+    final sha = r.data?['sha'] as String?;
+    if (sha == null) throw Exception('Blob creation failed');
+    return sha;
   }
 
   Future<String> createTree({
@@ -170,14 +176,13 @@ class GitHubApi {
     required String baseTreeSha,
     required List<Map<String, dynamic>> tree,
   }) async {
-    final r = await _dio.post(
+    final r = await _dio.post<Map<String, dynamic>>(
       '/repos/$owner/$repo/git/trees',
-      data: {
-        'base_tree': baseTreeSha,
-        'tree': tree,
-      },
+      data: {'base_tree': baseTreeSha, 'tree': tree},
     );
-    return (r.data as Map)['sha'] as String;
+    final sha = r.data?['sha'] as String?;
+    if (sha == null) throw Exception('Tree creation failed');
+    return sha;
   }
 
   Future<String> createCommit({
@@ -187,7 +192,7 @@ class GitHubApi {
     required String treeSha,
     required String parentSha,
   }) async {
-    final r = await _dio.post(
+    final r = await _dio.post<Map<String, dynamic>>(
       '/repos/$owner/$repo/git/commits',
       data: {
         'message': message,
@@ -195,7 +200,9 @@ class GitHubApi {
         'parents': [parentSha],
       },
     );
-    return (r.data as Map)['sha'] as String;
+    final sha = r.data?['sha'] as String?;
+    if (sha == null) throw Exception('Commit creation failed');
+    return sha;
   }
 
   Future<void> updateRef({
@@ -205,16 +212,12 @@ class GitHubApi {
     required String commitSha,
     bool force = false,
   }) async {
-    await _dio.patch(
+    await _dio.patch<void>(
       '/repos/$owner/$repo/git/refs/heads/$branch',
-      data: {
-        'sha': commitSha,
-        'force': force,
-      },
+      data: {'sha': commitSha, 'force': force},
     );
   }
 
-  /// Push multiple files in ONE commit (create or overwrite paths).
   Future<String> pushFilesSingleCommit({
     required String owner,
     required String repo,
@@ -223,6 +226,10 @@ class GitHubApi {
     required List<PushFile> files,
     void Function(String step)? onProgress,
   }) async {
+    if (files.isEmpty) {
+      throw Exception('No files to push');
+    }
+
     onProgress?.call('Reading branch…');
     final parentSha = await getBranchCommitSha(owner, repo, branch);
     final baseTreeSha = await getCommitTreeSha(owner, repo, parentSha);
@@ -264,14 +271,12 @@ class GitHubApi {
       repo: repo,
       branch: branch,
       commitSha: commitSha,
-      force: false,
     );
 
     onProgress?.call('Done');
     return commitSha;
   }
 
-  /// Delete selected paths in ONE commit (omit from tree by sha null mode).
   Future<String> deletePathsSingleCommit({
     required String owner,
     required String repo,
@@ -280,11 +285,14 @@ class GitHubApi {
     required List<String> pathsToDelete,
     void Function(String step)? onProgress,
   }) async {
+    if (pathsToDelete.isEmpty) {
+      throw Exception('No paths to delete');
+    }
+
     onProgress?.call('Reading branch…');
     final parentSha = await getBranchCommitSha(owner, repo, branch);
     final baseTreeSha = await getCommitTreeSha(owner, repo, parentSha);
 
-    // GitHub: path + mode + type + sha:null removes file from tree when using base_tree
     final tree = pathsToDelete
         .map((path) => {
               'path': path,
@@ -318,25 +326,40 @@ class GitHubApi {
       branch: branch,
       commitSha: commitSha,
     );
+
+    onProgress?.call('Done');
     return commitSha;
   }
 
-  String friendlyError(Object e) {
+  static String friendlyError(Object e) {
     if (e is DioException) {
       final data = e.response?.data;
-      final msg = data is Map ? (data['message']?.toString() ?? e.message) : e.message;
+      final msg = data is Map
+          ? (data['message']?.toString() ?? e.message ?? 'Network error')
+          : (e.message ?? 'Network error');
       final status = e.response?.statusCode;
-      if (status == 401 || status == 403) {
-        return 'Permission denied. Check token scopes (repo / Contents write).';
+
+      if (status == 401) {
+        return 'Invalid token. Re-check your PAT.';
+      }
+      if (status == 403) {
+        return 'Permission denied. Token needs repo / Contents:write scope.';
       }
       if (status == 404) {
         return 'Not found. Check repo name and token access.';
       }
       if (status == 409) {
-        return 'Conflict on branch. Pull/remote changed — try again.';
+        return 'Branch conflict — remote changed. Pull or retry.';
       }
-      return msg ?? 'Network error';
+      if (status == 422) {
+        return 'Invalid request: $msg';
+      }
+      if (status != null && status >= 500) {
+        return 'GitHub server error ($status). Try again shortly.';
+      }
+      return msg;
     }
-    return e.toString();
+    final s = e.toString();
+    return s.replaceFirst('Exception: ', '');
   }
 }
