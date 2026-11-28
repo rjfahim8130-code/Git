@@ -18,34 +18,27 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
   bool _saving = false;
 
   Future<void> _showAccountDialog({GhAccount? account}) async {
+    if (_saving) return;
     final isEditing = account != null;
 
-    final labelController = TextEditingController(
-      text: account?.label ?? '',
-    );
-    final tokenController = TextEditingController(
-      text: account?.token ?? '',
-    );
-
+    final labelController = TextEditingController(text: account?.label ?? '');
+    final tokenController = TextEditingController(text: account?.token ?? '');
     bool obscureToken = true;
     bool validating = false;
 
     await showDialog<void>(
       context: context,
-      barrierDismissible: !validating,
+      barrierDismissible: false,
       builder: (dialogContext) {
         return StatefulBuilder(
           builder: (context, setDialogState) {
             Future<void> saveAccount() async {
+              if (validating) return;
               final label = labelController.text.trim();
               final token = tokenController.text.trim();
 
               if (token.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('GitHub Token দিতে হবে।'),
-                  ),
-                );
+                _snack(context, 'GitHub Token required.');
                 return;
               }
 
@@ -54,14 +47,11 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
               try {
                 final api = GitHubApi(token);
                 final user = await api.getUser();
-
                 final login = user['login']?.toString();
                 final avatar = user['avatar_url']?.toString();
 
                 if (login == null || login.isEmpty) {
-                  throw Exception(
-                    'GitHub account information পাওয়া যায়নি।',
-                  );
+                  throw Exception('GitHub account info unavailable.');
                 }
 
                 final newAccount = GhAccount(
@@ -72,9 +62,7 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
                   avatarUrl: avatar,
                 );
 
-                await ref.read(accountsProvider.notifier).upsert(
-                      newAccount,
-                    );
+                await ref.read(accountsProvider.notifier).upsert(newAccount);
 
                 if (!isEditing) {
                   await ref
@@ -83,36 +71,22 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
                 }
 
                 if (!mounted) return;
-
+                if (!dialogContext.mounted) return;
                 Navigator.of(dialogContext).pop();
 
-                ScaffoldMessenger.of(this.context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      isEditing
-                          ? 'Account updated successfully.'
-                          : 'GitHub account added successfully.',
-                    ),
-                  ),
+                _snack(
+                  this.context,
+                  isEditing ? 'Account updated.' : 'Account added.',
                 );
               } catch (e) {
+                if (!dialogContext.mounted) return;
                 setDialogState(() => validating = false);
-
-                final message = e is Exception &&
-                        e.toString().contains('DioException')
-                    ? GitHubApi(token).friendlyError(e)
-                    : e.toString().replaceFirst('Exception: ', '');
-
-                ScaffoldMessenger.of(dialogContext).showSnackBar(
-                  SnackBar(content: Text(message)),
-                );
+                _snack(dialogContext, GitHubApi.friendlyError(e));
               }
             }
 
             return AlertDialog(
-              title: Text(
-                isEditing ? 'Edit Account' : 'Add GitHub Account',
-              ),
+              title: Text(isEditing ? 'Edit Account' : 'Add GitHub Account'),
               content: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -122,7 +96,7 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
                       enabled: !validating,
                       decoration: const InputDecoration(
                         labelText: 'Account Name',
-                        hintText: 'Personal / Work / My GitHub',
+                        hintText: 'Personal / Work',
                         prefixIcon: Icon(Icons.person_outline),
                       ),
                     ),
@@ -137,11 +111,8 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
                         hintText: 'ghp_...',
                         prefixIcon: const Icon(Icons.key),
                         suffixIcon: IconButton(
-                          onPressed: () {
-                            setDialogState(
-                              () => obscureToken = !obscureToken,
-                            );
-                          },
+                          onPressed: () => setDialogState(
+                              () => obscureToken = !obscureToken),
                           icon: Icon(
                             obscureToken
                                 ? Icons.visibility_outlined
@@ -152,8 +123,8 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
                     ),
                     const SizedBox(height: 12),
                     const Text(
-                      'Token GitHub-এর /user API দিয়ে যাচাই করা হবে। '
-                      'Token ডিভাইসের secure storage-এ সংরক্ষিত থাকবে।',
+                      'Token will be validated against /user API. '
+                      'Stored securely on device.',
                       style: TextStyle(
                         color: AppColors.textSecondary,
                         fontSize: 12,
@@ -183,7 +154,7 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
                       : const Icon(Icons.check, size: 18),
                   label: Text(
                     validating
-                        ? 'Verifying...'
+                        ? 'Verifying…'
                         : isEditing
                             ? 'Update'
                             : 'Add Account',
@@ -203,22 +174,19 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
   Future<void> _deleteAccount(GhAccount account) async {
     final confirm = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (ctx) => AlertDialog(
         title: const Text('Delete Account?'),
         content: Text(
-          'Are you sure you want to remove '
-          '${account.login ?? account.label} from Gito?',
+          'Remove ${account.login ?? account.label} from Gito?',
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.pop(ctx, false),
             child: const Text('Cancel'),
           ),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.danger,
-            ),
-            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.danger),
+            onPressed: () => Navigator.pop(ctx, true),
             child: const Text('Delete'),
           ),
         ],
@@ -229,73 +197,49 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
 
     try {
       await ref.read(accountsProvider.notifier).remove(account.id);
-
       if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Account removed successfully.'),
-        ),
-      );
+      _snack(context, 'Account removed.');
     } catch (e) {
       if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Delete failed: $e')),
-      );
+      _snack(context, 'Delete failed: $e');
     }
   }
 
   Future<void> _selectAccount(GhAccount account) async {
     await ref.read(activeAccountIdProvider.notifier).set(account.id);
-
     if (!mounted) return;
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          '${account.login ?? account.label} is now active.',
-        ),
-      ),
-    );
+    _snack(context, '${account.login ?? account.label} is now active.');
   }
-  
+
+  void _snack(BuildContext context, String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
   Widget _accountAvatar(GhAccount account) {
     final avatar = account.avatarUrl;
-
     if (avatar != null && avatar.isNotEmpty) {
       return CircleAvatar(
         radius: 25,
         backgroundColor: AppColors.surfaceDark,
         backgroundImage: NetworkImage(avatar),
         onBackgroundImageError: (_, __) {},
-        child: null,
       );
     }
-
     return const CircleAvatar(
       radius: 25,
       backgroundColor: AppColors.surfaceDark,
-      child: Icon(
-        Icons.person,
-        color: AppColors.textSecondary,
-      ),
+      child: Icon(Icons.person, color: AppColors.textSecondary),
     );
   }
 
-  Widget _accountCard(
-    GhAccount account,
-    bool isActive,
-  ) {
+  Widget _accountCard(GhAccount account, bool isActive) {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
         color: AppColors.cardDark,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
-          color: isActive
-              ? AppColors.primary
-              : AppColors.borderDark,
+          color: isActive ? AppColors.primary : AppColors.borderDark,
           width: isActive ? 1.5 : 1,
         ),
       ),
@@ -370,7 +314,7 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
                       _deleteAccount(account);
                     }
                   },
-                  itemBuilder: (context) => const [
+                  itemBuilder: (_) => const [
                     PopupMenuItem(
                       value: 'edit',
                       child: Row(
@@ -433,19 +377,14 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
             Text('GitHub Accounts'),
             Text(
               'Manage your GitHub connections',
-              style: TextStyle(
-                fontSize: 11,
-                color: AppColors.textSecondary,
-              ),
+              style: TextStyle(fontSize: 11, color: AppColors.textSecondary),
             ),
           ],
         ),
         actions: [
           IconButton(
             tooltip: 'Refresh',
-            onPressed: () {
-              ref.read(accountsProvider.notifier).load();
-            },
+            onPressed: () => ref.read(accountsProvider.notifier).load(),
             icon: const Icon(Icons.refresh),
           ),
         ],
@@ -456,25 +395,18 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
         label: const Text('Add Account'),
       ),
       body: accountsState.when(
-        loading: () => const Center(
-          child: CircularProgressIndicator(),
-        ),
-        error: (error, stack) => Center(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (error, _) => Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(
-                  Icons.error_outline,
-                  size: 42,
-                  color: AppColors.danger,
-                ),
+                const Icon(Icons.error_outline,
+                    size: 42, color: AppColors.danger),
                 const SizedBox(height: 12),
-                const Text(
-                  'Unable to load accounts',
-                  style: TextStyle(fontWeight: FontWeight.w600),
-                ),
+                const Text('Unable to load accounts',
+                    style: TextStyle(fontWeight: FontWeight.w600)),
                 const SizedBox(height: 8),
                 Text(
                   error.toString(),
@@ -486,9 +418,8 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
                 ),
                 const SizedBox(height: 16),
                 ElevatedButton.icon(
-                  onPressed: () {
-                    ref.read(accountsProvider.notifier).load();
-                  },
+                  onPressed: () =>
+                      ref.read(accountsProvider.notifier).load(),
                   icon: const Icon(Icons.refresh),
                   label: const Text('Try Again'),
                 ),
@@ -521,9 +452,7 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
                     const Text(
                       'No GitHub Accounts',
                       style: TextStyle(
-                        fontSize: 19,
-                        fontWeight: FontWeight.bold,
-                      ),
+                          fontSize: 19, fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 8),
                     const Text(
@@ -562,19 +491,14 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
                 ),
                 child: Row(
                   children: [
-                    const Icon(
-                      Icons.verified_user_outlined,
-                      color: AppColors.primary,
-                      size: 22,
-                    ),
+                    const Icon(Icons.verified_user_outlined,
+                        color: AppColors.primary, size: 22),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
                         '${accounts.length} GitHub account'
                         '${accounts.length == 1 ? '' : 's'} connected',
-                        style: const TextStyle(
-                          fontWeight: FontWeight.w600,
-                        ),
+                        style: const TextStyle(fontWeight: FontWeight.w600),
                       ),
                     ),
                   ],
@@ -594,14 +518,13 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
                 (account) => _accountCard(
                   account,
                   account.id == activeId ||
-                      (activeId == null &&
-                          accounts.first.id == account.id),
+                      (activeId == null && accounts.first.id == account.id),
                 ),
               ),
               const SizedBox(height: 12),
               const Text(
                 'Only one account can be active at a time. '
-                'Repositories and upload operations use the active account.',
+                'Repositories and upload use the active account.',
                 style: TextStyle(
                   fontSize: 12,
                   color: AppColors.textSecondary,
