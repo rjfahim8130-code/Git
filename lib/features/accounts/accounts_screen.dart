@@ -17,7 +17,6 @@ class AccountsScreen extends ConsumerStatefulWidget {
 class _AccountsScreenState extends ConsumerState<AccountsScreen> {
 
   Future<void> _showAccountDialog({GhAccount? account}) async {
-    if (_saving) return;
     final isEditing = account != null;
 
     final labelController = TextEditingController(text: account?.label ?? '');
